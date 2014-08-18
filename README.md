@@ -6,6 +6,12 @@ parallel job execution on Google App Engine
 http://godoc.org/github.com/fumin/gaepar
 
 ### Demo
+This demo provides an example of collecting github repositories in parallel.
+In particular, we will be collecting one repo for each day in the interval
+2014-01-01 to 2014-07-01, in total 181 days. We will be doing this with
+20 shards running in parallel, which most probably would be run on two more
+instances given the App Engine policy of restricting the concurrency of an
+instance to 10.
 #### Run development server
 `dev_appserver.py --enable_sendmail=yes --datastore_path=datastore.db demo/app.yaml batch/app.yaml`
 #### Deploy
