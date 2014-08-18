@@ -206,14 +206,14 @@ func CopyReposToBigqueryShard(w http.ResponseWriter, r *http.Request) {
 
 		k, shutdown := listenShutdown()
 		defer unlistenShutdown(k)
-		var childErr error
+		var uploadErr, fetchErr error
 		reporter := &gaepar.ProgressReporter{C: c, R: r, ThrottleDuration: 5 * time.Second}
 	L:
 		for i := start; i.Before(end); i = i.Add(24 * time.Hour) {
 			select {
-			case childErr = <-uploadDone:
+			case uploadErr = <-uploadDone:
 				break L
-			case childErr = <-fetchDone:
+			case fetchErr = <-fetchDone:
 				break L
 			case <-shutdown:
 				return fmt.Errorf("instance shutdown")
@@ -226,12 +226,28 @@ func CopyReposToBigqueryShard(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		var childErr error
 		close(repoCreated)
-		for i := 0; i < n; i++ {
-			childErr = <-fetchDone
+		if fetchErr != nil {
+			childErr = fetchErr
+			for i := 0; i < n-1; i++ {
+				<-fetchDone
+			}
+		} else {
+			for i := 0; i < n; i++ {
+				if err1 := <-fetchDone; err1 != nil {
+					childErr = err1
+				}
+			}
 		}
 		pw.Close()
-		childErr = <-uploadDone
+		if uploadErr != nil {
+			childErr = uploadErr
+		} else {
+			if err1 := <-uploadDone; err1 != nil {
+				childErr = err1
+			}
+		}
 
 		if childErr != nil {
 			return childErr
