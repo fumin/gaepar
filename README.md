@@ -2,14 +2,15 @@ gaepar
 ------
 parallel job execution on Google App Engine
 
-## Documentation
+### Documentation
+http://godoc.org/github.com/fumin/gaepar
 
-## Demo
-### Run development server
+### Demo
+#### Run development server
 `dev_appserver.py --enable_sendmail=yes --datastore_path=datastore.db demo/app.yaml batch/app.yaml`
-### Deploy
+#### Deploy
 `appcfg.py update module_to_be_uploaded/ --no_cookies --application=app_id`
-### Submit jobs
+#### Submit jobs
 * Test our implementation of finding a github repo that is created on a day say 2014-01-01 `https://batch-dot-imposing-muse-664.appspot.com/Repo?created=2014-01-01`
 * Submit a job with 20 shards `https://batch-dot-imposing-muse-664.appspot.com/CopyReposToBigquery?start=2014-01-01&end=2014-07-01&shards=20`. This job might take a minute or two. While it is running, observe that the job is distributed to more than one instance.
 * When the job is completed, a resulting file would be created in Google Cloud Storage with the URL gs://app_id.appspot.com/CopyReposToBigquery/job_id/data.json.bigquery. Load the resulting file into Google Bigquery with the following schema:

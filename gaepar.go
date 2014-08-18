@@ -1,3 +1,36 @@
+// gaepar is a package that helps you run parallel jobs in Google App Engine.
+// It does this by submiting a number of taskqueue tasks at once, and track
+// their statuses through entities in datastore. To use this package, you would
+// typically define three HTTP handlers:
+//
+// The first handler is used submit the tasks that would run in parallel later.
+// This handler does this by preparing a Job object and a number of Shard
+// objects, and call CreateJob to submit the job.
+//
+// The second handler is where the individual shards would be run. This handle
+// would need to call HandleShard internally and would look something like
+//   func Handler(w http.ResponseWriter, r *http.Request) {
+//     c := appengine.NewContext(r)
+//     err := gaepar.HandleShard(c, r, func(fc appengine.Context, fr *http.Request) error{
+//       jobKey, err1 := gaepar.JobKeyFromRequest(fc, fr)
+//       if err1 != nil {
+//         return err1
+//       }
+//       // Do you own logic here...
+//     })
+//     if err != nil {
+//       http.Error(w, err.Error(), http.StatusInternalServerError)
+//       return
+//     }
+//  }
+//
+// The third handler is used by a master task to monitor the individual shards
+// as well as to run a finalizer that might concatenate the results of all
+// shards into a single file or trigger a new following job etc. This handler
+// needs to call ControlJob.
+//
+// A demo of this package can be found in the "demo" subdirectory. More
+// information.about the demo can be found in https://github.com/fumin/gaepar#demo .
 package gaepar
 
 import (
