@@ -1,0 +1,80 @@
+[
+    {
+        "name": "ID",
+        "type": "STRING",
+        "mode": "REQUIRED"
+    },
+    {
+        "name": "CreatedAt",
+        "type": "INTEGER",
+        "mode": "REQUIRED"
+    },
+    {
+        "name": "Locale",
+        "type": "STRING"
+    },
+    {
+        "name": "OwnerID",
+        "type": "STRING"
+    },
+    {
+        "name": "EchoOriginalID",
+        "type": "STRING"
+    },
+    {
+        "name": "EchoProgenitorID",
+        "type": "STRING"
+    },
+    {
+        "name": "Stickers",
+        "type": "RECORD",
+        "mode": "REPEATED",
+        "fields": [
+            {
+                "name": "ProductID",
+                "type": "STRING",
+                "mode": "REQUIRED"
+            },
+            {
+                "name": "ID",
+                "type": "STRING",
+                "mode": "REQUIRED"
+            }
+        ]
+    },
+    {
+        "name": "Auths",
+        "type": "RECORD",
+        "mode": "REPEATED",
+        "fields": [
+            {
+                "name": "Type",
+                "type": "STRING",
+                "mode": "REQUIRED"
+            },
+            {
+                "name": "ProviderUID",
+                "type": "STRING",
+                "mode": "REQUIRED"
+            }
+        ]
+    },
+    {
+        "name": "Device",
+        "type": "RECORD",
+        "fields": [
+            {
+                "name": "OS",
+                "type": "STRING"
+            },
+            {
+                "name": "OSVersion",
+                "type": "STRING"
+            },
+            {
+                "name": "Model",
+                "type": "STRING"
+            }
+        ]
+    }
+]

@@ -1,0 +1,8 @@
+queue:
+# CopyReposToBigquery queue stores tasks to copy github repos to big query.
+# It is based on the MapReduce queue configuration guidelines:
+# https://code.google.com/p/appengine-mapreduce/wiki/InstancesQueuesShardsAndSlices
+- name: CopyReposToBigquery
+  rate: 1/s
+  bucket_size: 1
+  max_concurrent_requests: 200
