@@ -23,7 +23,7 @@ import (
 )
 
 func init() {
-	http.HandleFunc("/Repos", Repos)
+	http.HandleFunc("/Repo", Repo)
 	http.HandleFunc("/CopyReposToBigquery", CopyReposToBigquery)
 	http.HandleFunc("/CopyReposToBigqueryShard", CopyReposToBigqueryShard)
 	http.HandleFunc("/CopyReposToBigqueryControl", CopyReposToBigqueryControl)
@@ -54,7 +54,7 @@ func unlistenShutdown(k int) {
 	delete(shutdownListeners.m, k)
 }
 
-func Repos(w http.ResponseWriter, r *http.Request) {
+func Repo(w http.ResponseWriter, r *http.Request) {
 	created, err := time.Parse("2006-01-02", r.FormValue("created"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -348,7 +348,7 @@ func repoCreatedAfter(c *http.Client, created time.Time) ([]byte, error) {
 			Language        string    `json:"language"`
 			ForksCount      int64     `json:"forks_count"`
 			DefaultBranch   string    `json:"default_branch"`
-			Score           int64     `json:"score"`
+			Score           float64   `json:"score"`
 		} `json:"items"`
 	}{}
 	if err = json.Unmarshal(body, &jsonResp); err != nil {
