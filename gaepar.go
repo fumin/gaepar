@@ -28,7 +28,7 @@ var (
 	ErrCanceled = fmt.Errorf("canceled")
 )
 
-type Job struct {
+type job struct {
 	Status     string
 	Heartbeat  time.Time
 	Runs       int64
@@ -36,25 +36,25 @@ type Job struct {
 	Errors     []string `datastore:",noindex"`
 
 	Created        time.Time
-	Controller     task   `datastore:"-"`
+	Controller     Task   `datastore:"-"`
 	ControllerJSON string `datastore:",noindex"`
 	Description    string `datastore:",noindex"`
 
 	Key *datastore.Key `datastore:"-"`
 }
 
-func (j *Job) Load(c <-chan datastore.Property) error {
+func (j *job) Load(c <-chan datastore.Property) error {
 	if err := datastore.LoadStruct(j, c); err != nil {
 		return err
 	}
-	cntl := task{}
+	cntl := Task{}
 	if err := json.Unmarshal([]byte(j.ControllerJSON), &cntl); err != nil {
 		return err
 	}
 	j.Controller = cntl
 	return nil
 }
-func (j *Job) Save(c chan<- datastore.Property) error {
+func (j *job) Save(c chan<- datastore.Property) error {
 	cj, err := json.Marshal(j.Controller)
 	if err != nil {
 		return err
@@ -63,34 +63,41 @@ func (j *Job) Save(c chan<- datastore.Property) error {
 	return datastore.SaveStruct(j, c)
 }
 
-func (j *Job) DatastoreKey() *datastore.Key {
+func (j *job) DatastoreKey() *datastore.Key {
 	return j.Key
 }
-func (j *Job) SetStatus(s string) {
+func (j *job) SetStatus(s string) {
 	j.Status = s
 }
-func (j *Job) SetHeartbeat(t time.Time) {
+func (j *job) SetHeartbeat(t time.Time) {
 	j.Heartbeat = t
 }
-func (j *Job) IncrRuns() {
+func (j *job) IncrRuns() {
 	j.Runs += 1
 }
-func (j *Job) AppendError(err error) {
+func (j *job) AppendError(err error) {
 	j.Errors = append(j.Errors, err.Error())
 }
-func (j *Job) GetStatus() string {
+func (j *job) GetStatus() string {
 	return j.Status
 }
-func (j *Job) GetHeartbeat() time.Time {
+func (j *job) GetHeartbeat() time.Time {
 	return j.Heartbeat
 }
-func (j *Job) GetRuns() int64 {
+func (j *job) GetRuns() int64 {
 	return j.Runs
 }
-func (j *Job) GetMaxRetries() int64 {
+func (j *job) GetMaxRetries() int64 {
 	return j.MaxRetries
 }
 
+type Job struct {
+	Controller  Task
+	MaxRetries  int64
+	Description string
+}
+
+// JobKeyFromRequest returns an identifier of the currently running job.
 func JobKeyFromRequest(c appengine.Context, r *http.Request) (*datastore.Key, error) {
 	return datastore.DecodeKey(r.FormValue(jobKeyURLValueKey))
 }
@@ -186,7 +193,9 @@ func (pr *ProgressReporter) Put(progress int64) error {
 	}, nil)
 }
 
-type task struct {
+// Task encapsulates the information needed for a job or shard to be run.
+// The Values field of a Task should always be set and never be left as nil.
+type Task struct {
 	Values url.Values
 	Path   string
 	Host   string
@@ -194,78 +203,82 @@ type task struct {
 	Queue  string
 }
 
-func NewTask() task {
-	return task{Values: url.Values{}}
-}
-
-func (t task) Add(c appengine.Context) (*taskqueue.Task, error) {
+func (t Task) add(c appengine.Context) (*taskqueue.Task, error) {
 	gt := taskqueue.NewPOSTTask(t.Path, t.Values)
 	gt.Header.Set("Host", t.Host)
 	gt.Delay = t.Delay
 	return taskqueue.Add(c, gt, t.Queue)
 }
 
-type ShardTask struct {
-	T          task
+type Shard struct {
+	T          Task
 	MaxRetries int64
 }
 
-func CreateJob(c appengine.Context, j *Job, tasks []ShardTask) error {
-	j.Created = time.Now()
+// CreateJob creates a job that would be executed in parallel in App Engine by
+// creating the necessary datastore records and taskqueue tasks.
+func CreateJob(c appengine.Context, aJob *Job, shards []Shard) (jobK *datastore.Key, _ error) {
+	j := &job{
+		Created:     time.Now(),
+		Controller:  aJob.Controller,
+		MaxRetries:  aJob.MaxRetries,
+		Description: aJob.Description,
+	}
 	j.Controller.Delay = time.Minute
 	err := datastore.RunInTransaction(c, func(tc appengine.Context) error {
-		jobK, err1 := datastore.Put(tc, datastore.NewIncompleteKey(tc, jobKind, nil), j)
+		var err1 error
+		jobK, err1 = datastore.Put(tc, datastore.NewIncompleteKey(tc, jobKind, nil), j)
 		if err1 != nil {
 			return fmt.Errorf("insert job error %v", err1)
 		}
 		j.Key = jobK
 		j.Controller.Values.Set(jobKeyURLValueKey, j.Key.Encode())
-		if _, err1 = j.Controller.Add(tc); err1 != nil {
+		if _, err1 = j.Controller.add(tc); err1 != nil {
 			return fmt.Errorf("job finalizer add error %v", err1)
 		}
 		return nil
 	}, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	ts := []struct {
 		Task  *taskqueue.Task
 		Queue string
 	}{}
-	for _, t := range tasks {
+	for _, s := range shards {
 		state := &shardState{
 			JobID:       j.Key.IntID(),
-			MaxRetries:  t.MaxRetries,
-			Description: fmt.Sprintf("%+v", t),
+			MaxRetries:  s.MaxRetries,
+			Description: fmt.Sprintf("%+v", s),
 		}
 		err = datastore.RunInTransaction(c, func(tc appengine.Context) error {
 			stateK, err1 := datastore.Put(tc, datastore.NewIncompleteKey(tc, shardStateKind, nil), state)
 			if err1 != nil {
 				return fmt.Errorf("insert shardState error %v", err1)
 			}
-			t.T.Values.Set(shardDatastoreKeyURLValueKey, stateK.Encode())
-			t.T.Values.Set(jobKeyURLValueKey, j.Key.Encode())
+			s.T.Values.Set(shardDatastoreKeyURLValueKey, stateK.Encode())
+			s.T.Values.Set(jobKeyURLValueKey, j.Key.Encode())
 			// Add a delay so that we can delete this task if there are errors later
-			t.T.Delay = 30 * time.Second
-			taskqueueTask, err1 := t.T.Add(tc)
+			s.T.Delay = 50 * time.Second
+			taskqueueTask, err1 := s.T.add(tc)
 			if err1 != nil {
 				return err1
 			}
 			ts = append(ts, struct {
 				Task  *taskqueue.Task
 				Queue string
-			}{Task: taskqueueTask, Queue: t.T.Queue})
+			}{Task: taskqueueTask, Queue: s.T.Queue})
 			return nil
 		}, nil)
 		if err != nil {
 			for _, t := range ts {
 				taskqueue.Delete(c, t.Task, t.Queue)
 			}
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return jobK, nil
 }
 
 // ControlJob checks the state of a job, and upon completion runs f. Callers of
@@ -287,23 +300,25 @@ func ControlJob(c appengine.Context, r *http.Request, f func(fc appengine.Contex
 	}
 	for _, s := range shards {
 		if !ended(s) {
-			j := &Job{}
+			j := &job{}
 			if err = datastore.Get(c, jobK, j); err != nil {
 				return err
 			}
 			j.Key = jobK
 			j.Controller.Values.Set(jobKeyURLValueKey, j.Key.Encode())
-			if _, err = j.Controller.Add(c); err != nil {
+			if _, err = j.Controller.add(c); err != nil {
 				return fmt.Errorf("job finalizer add error %v", err)
 			}
 			return nil
 		}
 	}
 
+	// Halt immediately and mark the current job as failed or canceled if there
+	// are shards that were not completed.
 	for _, s := range shards {
 		if s.Status != statusCompleted {
 			return datastore.RunInTransaction(c, func(tc appengine.Context) error {
-				j := &Job{}
+				j := &job{}
 				if err1 := datastore.Get(c, jobK, j); err1 != nil {
 					return err1
 				}
@@ -317,8 +332,7 @@ func ControlJob(c appengine.Context, r *http.Request, f func(fc appengine.Contex
 		}
 	}
 
-	job := &Job{Key: jobK}
-	return run(c, r, job, f)
+	return run(c, r, &job{Key: jobK}, f)
 }
 
 // HandleShard handles an App Engine taskqueue request by doing the necessary
@@ -474,8 +488,8 @@ func retryTaskFromRequest(c appengine.Context, r *http.Request) (*taskqueue.Task
 		return nil, err1
 	}
 	queue := r.Header.Get("X-AppEngine-QueueName")
-	t := task{Values: r.Form, Path: r.URL.Path, Host: host, Delay: heartbeatInterval, Queue: queue}
-	return t.Add(c)
+	t := Task{Values: r.Form, Path: r.URL.Path, Host: host, Delay: heartbeatInterval, Queue: queue}
+	return t.add(c)
 }
 
 func ended(t longRunningTask) bool {

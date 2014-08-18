@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"time"
@@ -96,7 +97,7 @@ func copyReposToBigqueryFormValues(c appengine.Context, r *http.Request) (*copyR
 		v.Shards = 100
 	}
 
-	v.ShardWidth = time.Duration(v.End.Sub(v.Start).Hours()/float64(v.Shards) + 1)
+	v.ShardWidth = time.Duration(int64(v.End.Sub(v.Start))/v.Shards + 1)
 	if v.ShardWidth <= 0 {
 		return nil, fmt.Errorf("non-positive shard width %d for start %v end %v", v.ShardWidth, v.Start, v.End)
 	}
@@ -115,19 +116,19 @@ func CopyReposToBigquery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tasks := []gaepar.ShardTask{}
-	for i := v.Start; i.Before(v.End); i.Add(v.ShardWidth) {
+	shards := []gaepar.Shard{}
+	for i := v.Start; i.Before(v.End); i = i.Add(v.ShardWidth) {
 		subEnd := i.Add(v.ShardWidth)
 		if subEnd.After(v.End) {
 			subEnd = v.End
 		}
-		t := gaepar.NewTask()
+		t := gaepar.Task{Values: url.Values{}}
 		t.Values.Set("start", i.Format("2006-01-02"))
 		t.Values.Set("end", subEnd.Format("2006-01-02"))
 		t.Path = "/CopyReposToBigqueryShard"
 		t.Host = v.ModuleHostname
 		t.Queue = "CopyReposToBigquery"
-		tasks = append(tasks, gaepar.ShardTask{T: t, MaxRetries: 3})
+		shards = append(shards, gaepar.Shard{T: t, MaxRetries: 3})
 	}
 
 	descr, err := json.Marshal(v)
@@ -135,15 +136,16 @@ func CopyReposToBigquery(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("cannot json job values %+v", v), http.StatusInternalServerError)
 		return
 	}
-	cntl := gaepar.NewTask()
+	cntl := gaepar.Task{Values: url.Values{}}
 	cntl.Path = "/CopyReposToBigqueryControl"
 	cntl.Host = v.ModuleHostname
 	job := &gaepar.Job{Controller: cntl, Description: string(descr), MaxRetries: 3}
-	if err = gaepar.CreateJob(c, job, tasks); err != nil {
+	jobKey, err := gaepar.CreateJob(c, job, shards)
+	if err != nil {
 		http.Error(w, fmt.Sprintf("CreateJob error %v", err), http.StatusInternalServerError)
 		return
 	}
-	w.Write([]byte(fmt.Sprintf("job key: %v", job.Key)))
+	w.Write([]byte(fmt.Sprintf("job key: %v", jobKey)))
 }
 
 func CopyReposToBigqueryShard(w http.ResponseWriter, r *http.Request) {
@@ -207,7 +209,7 @@ func CopyReposToBigqueryShard(w http.ResponseWriter, r *http.Request) {
 		var childErr error
 		reporter := &gaepar.ProgressReporter{C: c, R: r, ThrottleDuration: 5 * time.Second}
 	L:
-		for i := start; i.Before(end); i.Add(24 * time.Hour) {
+		for i := start; i.Before(end); i = i.Add(24 * time.Hour) {
 			select {
 			case childErr = <-uploadDone:
 				break L
@@ -260,6 +262,8 @@ func CopyReposToBigqueryControl(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+
+		// List the resulting objects of each shard
 		objs := []*storage.Object{}
 		prefix := fmt.Sprintf("CopyReposToBigquery/%d/shards/", jobKey.IntID())
 		pageToken := ""
@@ -278,6 +282,7 @@ func CopyReposToBigqueryControl(w http.ResponseWriter, r *http.Request) {
 			return nil
 		}
 
+		// Concatenate the results of each shard into one output file
 		dest := fmt.Sprintf("CopyReposToBigquery/%d/data.json.bigquery", jobKey.IntID())
 		obj := &storage.Object{Name: dest, ContentType: objs[0].ContentType}
 		if _, err := objService.Insert(defaultBucket, obj).Media(bytes.NewBuffer([]byte{})).Do(); err != nil {
@@ -321,6 +326,10 @@ func ahStop(w http.ResponseWriter, r *http.Request) {
 }
 
 func repoCreatedAfter(c *http.Client, created time.Time) ([]byte, error) {
+	// Sleep a while so that we can see the progress of shards advancing,
+	// as well as to avoid exceeding the github API rate limit
+	time.Sleep(20 * time.Second)
+
 	resp, err := c.Get(fmt.Sprintf("https://api.github.com/search/repositories?q=created:%s", created.Format("2006-01-02")))
 	if err != nil {
 		return nil, err
@@ -337,7 +346,7 @@ func repoCreatedAfter(c *http.Client, created time.Time) ([]byte, error) {
 			Owner struct {
 				Login string `json:"login"`
 				ID    int64  `json:"id"`
-			}
+			} `json:"owner"`
 			Fork            bool      `json:"fork"`
 			CreatedAt       time.Time `json:"created_at"`
 			UpdatedAt       time.Time `json:"updated_at"`
@@ -353,6 +362,9 @@ func repoCreatedAfter(c *http.Client, created time.Time) ([]byte, error) {
 	}{}
 	if err = json.Unmarshal(body, &jsonResp); err != nil {
 		return nil, err
+	}
+	if len(jsonResp.Items) == 0 {
+		return nil, fmt.Errorf("no repos for created %s", created.Format("2006-01-02"))
 	}
 	repo := jsonResp.Items[0]
 	return json.Marshal(repo)

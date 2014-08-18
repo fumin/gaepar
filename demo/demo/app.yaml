@@ -1,4 +1,4 @@
-application: imposing-muse-664
+application: appid
 version: 0-0-0
 runtime: go
 api_version: go1
